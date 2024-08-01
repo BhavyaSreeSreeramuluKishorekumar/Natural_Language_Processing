@@ -1,0 +1,346 @@
+#Installing libraries
+
+!pip install transformers[torch]
+
+# Transformers installation
+! pip install datasets evaluate
+
+#mounting google drive
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+
+dataset_path = '/content/drive/MyDrive/NLP/'
+### check the list files in the folder
+print(os.listdir(dataset_path))
+
+#Loading the dataset
+
+import pandas as pd
+import json
+
+id2label = {0: "phrase", 1: "passage",2:"multi"}
+
+label2id = {"phrase": 0, "passage": 1,"multi":2}
+
+def load_data_from_file(file_name):
+    data_list = []
+
+    with open(dataset_path + file_name) as file:
+        for line in file:
+            data = json.loads(line)
+
+            # Extract data from JSON
+            tweet = data['postText'][0]
+            article_title = data['targetTitle']
+            article = ' '.join(data['targetParagraphs'])
+            label = data['tags'][0]
+
+            # Ensure label is one of the specified categories
+            valid_labels = ['phrase', 'phrases', 'passage', 'multi']
+
+            if label not in valid_labels:
+                print("Invalid label:", label)
+                continue
+
+            # Skip 'multi' labeled entries
+            #if label == 'multi':
+            #    continue
+
+            # Combine text and labels
+            text = tweet + ' - ' + article_title + article
+            #is_clickbait = label in ['phrase', 'phrases','multi']
+
+            data_list.append({'text': text,'category':label})
+
+    return pd.DataFrame(data_list)
+
+#Feature Engineering and pre-processing
+
+# Load the train datasets
+train_data = load_data_from_file('train.jsonl')
+
+train_data.head(3)
+
+train_data['category'].value_counts()
+
+import matplotlib.pyplot as plt
+
+# Assuming your DataFrame is named 'df'
+labels = train_data['category']
+plt.hist(labels)
+plt.xlabel('Label')
+plt.ylabel('Frequency')
+plt.title('Distribution of the training dataset')
+plt.show()
+
+from wordcloud import WordCloud
+
+# Assuming your DataFrame is named 'df'
+text_data = train_data['text']
+
+# Combine all text data into a single string
+text_train = ' '.join(text_data)
+
+# Create a WordCloud object with custom settings
+wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text_train)
+
+# Display the word cloud
+plt.figure(figsize=(10, 5))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.show()
+
+# Load the valid datasets
+
+validation_data = load_data_from_file('validation.jsonl')
+validation_data.head(3)
+
+# Assuming your DataFrame is named 'df'
+labels = validation_data['category']
+plt.hist(labels)
+plt.xlabel('Label')
+plt.ylabel('Frequency')
+plt.title('Distribution of the validation dataset')
+plt.show()
+
+# Assuming your DataFrame is named 'df'
+text_data = validation_data['text']
+
+# Combine all text data into a single string
+text_valid = ' '.join(text_data)
+
+# Create a WordCloud object with custom settings
+wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text_valid)
+
+# Display the word cloud
+plt.figure(figsize=(10, 5))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.show()
+
+import nltk
+import string
+from gensim.models import Word2Vec
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+nltk.download('stopwords')
+nltk.download('punkt')
+
+import string
+from nltk.corpus import stopwords
+from bs4 import BeautifulSoup
+# Import NLTK and download the stopwords dataset if not already downloaded
+
+# Function to clean and preprocess text
+class Cleaner():
+  def __init__(self):
+    pass
+  def put_line_breaks(self,text):
+    text = text.replace('','\n')
+    return text
+  def remove_html_tags(self,text):
+    cleantext = BeautifulSoup(text, "lxml").text
+    return cleantext
+  def clean(self,text):
+    text = self.put_line_breaks(text)
+    text = self.remove_html_tags(text)
+    return text
+
+cleaner = Cleaner()
+validation_data['text_cleaned'] = validation_data['text'].apply(cleaner.clean)
+validation_data.head(3)
+
+train_data['text_cleaned'] = train_data['text'].apply(cleaner.clean)
+train_data.head(3)
+
+from sklearn import preprocessing
+
+
+le = preprocessing.LabelEncoder()
+le.fit(train_data['category'].tolist())
+train_data['label'] = le.transform(train_data['category'].tolist())
+
+
+le = preprocessing.LabelEncoder()
+le.fit(validation_data['category'].tolist())
+validation_data['label'] = le.transform(validation_data['category'].tolist())
+
+
+train_data.head(3)
+
+validation_data.head(3)
+
+#Tokenizer
+
+from transformers import AutoTokenizer
+from datasets import Dataset
+
+model_name = "roberta-base" #"bert-large-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+def preprocess_function(examples):
+    return tokenizer(examples["text"], truncation=True,padding=True)
+
+train_dataset = Dataset.from_pandas(train_data)
+test_dataset = Dataset.from_pandas(validation_data)
+
+tokenized_train = train_dataset.map(preprocess_function, batched=True)
+
+tokenized_test = test_dataset.map(preprocess_function, batched=True)
+
+#Model Initialization
+
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=3)
+
+from transformers import DataCollatorWithPadding
+from transformers import TrainingArguments, Trainer
+import evaluate
+import numpy as np
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+metric = evaluate.load("accuracy")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+
+#!pip install accelerate -U
+
+#Training
+
+training_args = TrainingArguments(
+    output_dir="/content/drive/MyDrive/NLP/NLP_CW1/",
+    learning_rate=2e-4,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    num_train_epochs=5,
+    weight_decay=0.01,
+    evaluation_strategy = "epoch",
+    logging_strategy="epoch"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_train,
+    eval_dataset=tokenized_test,
+    tokenizer=tokenizer,
+    data_collator=data_collator,
+    compute_metrics=compute_metrics
+
+)
+
+trainer.train()
+
+model_name1 = "bert-large-cased"
+tokenizer1 = AutoTokenizer.from_pretrained(model_name1)
+
+def preprocess_function1(examples):
+    return tokenizer1(examples["text"], truncation=True,padding=True)
+
+tokenized_train1 = train_dataset.map(preprocess_function1, batched=True)
+
+tokenized_test1 = test_dataset.map(preprocess_function1, batched=True)
+
+model1 = AutoModelForSequenceClassification.from_pretrained(model_name1, num_labels=3)
+
+data_collator1 = DataCollatorWithPadding(tokenizer=tokenizer1)
+
+model_name_save = model_name1.split("/")[-1]
+
+training_args = TrainingArguments(
+    output_dir=f"/content/drive/MyDrive/NLP/{model_name_save}",
+    learning_rate=2e-4,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    num_train_epochs=5,
+    weight_decay=0.01,
+    evaluation_strategy="epoch",
+    logging_strategy="epoch"
+)
+
+trainer1 = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_train1,
+    eval_dataset=tokenized_test1,
+    tokenizer=tokenizer1,
+    data_collator=data_collator1,
+    compute_metrics=compute_metrics
+
+)
+
+
+trainer1.train()
+
+model_name2 = "microsoft/deberta-base"
+tokenizer2 = AutoTokenizer.from_pretrained(model_name2)
+
+def preprocess_function2(examples):
+    return tokenizer2(examples["text"], truncation=True,padding=True)
+
+tokenized_train2 = train_dataset.map(preprocess_function2, batched=True)
+
+tokenized_test2 = test_dataset.map(preprocess_function2, batched=True)
+
+model2 = AutoModelForSequenceClassification.from_pretrained(model_name2, num_labels=3)
+
+data_collator2 = DataCollatorWithPadding(tokenizer=tokenizer2)
+
+model_name_save = model_name2.split("/")[-1]
+
+training_args2 = TrainingArguments(
+    output_dir=f"/content/drive/MyDrive/NLP/{model_name_save}",
+    learning_rate=2e-4,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    num_train_epochs=5,
+    weight_decay=0.01,
+    evaluation_strategy="epoch",
+    logging_strategy="epoch"
+)
+
+trainer2 = Trainer(
+    model=model2,
+    args=training_args2,
+    train_dataset=tokenized_train2,
+    eval_dataset=tokenized_test2,
+    tokenizer=tokenizer2,
+    data_collator=data_collator2,
+    compute_metrics=compute_metrics
+
+)
+
+
+trainer2.train()
+
+trainer.save_model('"/content/drive/MyDrive/NLP/')
+
+#Model Evaluation
+
+from sklearn.metrics import classification_report
+
+preds = trainer.predict(tokenized_test)
+preds = np.argmax(preds[:3][0],axis=1) #preds[:3][1]
+GT = validation_data['label'].tolist()
+print(classification_report(GT,preds))
+
+preds = trainer1.predict(tokenized_test1)
+preds = np.argmax(preds[:3][0],axis=1) #preds[:3][1]
+GT = validation_data['label'].tolist()
+print(classification_report(GT,preds))
+
+preds = trainer2.predict(tokenized_test2)
+preds = np.argmax(preds[:3][0],axis=1) #preds[:3][1]
+GT = validation_data['label'].tolist()
+print(classification_report(GT,preds))
+
+from google.colab import runtime
+runtime.unassign()
